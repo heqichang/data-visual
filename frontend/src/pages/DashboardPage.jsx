@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
-import { Responsive, WidthProvider } from 'react-grid-layout'
+import GridLayout from 'react-grid-layout'
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
 import {
@@ -43,7 +43,7 @@ import {
 import axios from 'axios'
 import ReactECharts from 'echarts-for-react'
 
-const ReactGridLayout = WidthProvider(Responsive)
+const ReactGridLayout = GridLayout
 
 const chartTypes = [
   { type: 'bar', label: '柱状图', icon: <BarChartOutlined /> },
@@ -776,9 +776,8 @@ export default function DashboardPage({ datasetId, datasetInfo }) {
         ) : (
           <ReactGridLayout
             className="layout"
-            layouts={{ lg: layout }}
-            breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
-            cols={{ lg: 24, md: 20, sm: 12, xs: 8, xxs: 4 }}
+            layout={layout}
+            cols={24}
             rowHeight={30}
             isDraggable={isEditing}
             isResizable={isEditing}
