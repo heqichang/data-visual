@@ -6,7 +6,6 @@ import dayjs from 'dayjs'
 
 const { RangePicker } = DatePicker
 const { Option } = Select
-const { Range } = Slider
 
 const safeFormatNumber = (num, defaultValue = '-') => {
   if (num === null || num === undefined || typeof num !== 'number') {
@@ -236,7 +235,8 @@ function FilterPage({ datasetId, datasetInfo }) {
       
       return (
         <Spin spinning={isLoading}>
-          <Range
+          <Slider
+            range
             min={min}
             max={max}
             value={filter.value || [min, max]}
