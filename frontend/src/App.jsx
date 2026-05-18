@@ -6,7 +6,12 @@ import {
   BarChartOutlined,
   TableOutlined,
   DashboardOutlined,
-  FilterOutlined
+  FilterOutlined,
+  ExperimentOutlined,
+  BlockOutlined,
+  PieChartOutlined,
+  SwapOutlined,
+  AppstoreOutlined
 } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import UploadPage from './pages/UploadPage.jsx'
@@ -14,6 +19,10 @@ import OverviewPage from './pages/OverviewPage.jsx'
 import ChartPage from './pages/ChartPage.jsx'
 import TablePage from './pages/TablePage.jsx'
 import FilterPage from './pages/FilterPage.jsx'
+import PipelinePage from './pages/PipelinePage.jsx'
+import DashboardPage from './pages/DashboardPage.jsx'
+import PivotTablePage from './pages/PivotTablePage.jsx'
+import ComparisonPage from './pages/ComparisonPage.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 
 const { Header, Sider, Content } = Layout
@@ -47,8 +56,32 @@ function App() {
     },
     {
       key: '/charts',
-      icon: <BarChartOutlined />,
-      label: '基础图表',
+      icon: <PieChartOutlined />,
+      label: '图表分析',
+      disabled: !datasetId,
+    },
+    {
+      key: '/pivot',
+      icon: <AppstoreOutlined />,
+      label: '数据透视',
+      disabled: !datasetId,
+    },
+    {
+      key: '/pipeline',
+      icon: <BlockOutlined />,
+      label: '数据管道',
+      disabled: !datasetId,
+    },
+    {
+      key: '/dashboard',
+      icon: <ExperimentOutlined />,
+      label: '交互式仪表盘',
+      disabled: !datasetId,
+    },
+    {
+      key: '/comparison',
+      icon: <SwapOutlined />,
+      label: '数据对比',
       disabled: !datasetId,
     },
     {
@@ -109,6 +142,10 @@ function App() {
             <Route path="/upload" element={<UploadPage onDatasetLoaded={handleDatasetLoaded} />} />
             <Route path="/overview" element={datasetId ? <ErrorBoundary><OverviewPage datasetId={datasetId} /></ErrorBoundary> : <Navigate to="/upload" />} />
             <Route path="/charts" element={datasetId ? <ErrorBoundary><ChartPage datasetId={datasetId} datasetInfo={datasetInfo} /></ErrorBoundary> : <Navigate to="/upload" />} />
+            <Route path="/pivot" element={datasetId ? <ErrorBoundary><PivotTablePage datasetId={datasetId} datasetInfo={datasetInfo} /></ErrorBoundary> : <Navigate to="/upload" />} />
+            <Route path="/pipeline" element={datasetId ? <ErrorBoundary><PipelinePage datasetId={datasetId} datasetInfo={datasetInfo} /></ErrorBoundary> : <Navigate to="/upload" />} />
+            <Route path="/dashboard" element={datasetId ? <ErrorBoundary><DashboardPage datasetId={datasetId} datasetInfo={datasetInfo} /></ErrorBoundary> : <Navigate to="/upload" />} />
+            <Route path="/comparison" element={datasetId ? <ErrorBoundary><ComparisonPage datasetId={datasetId} datasetInfo={datasetInfo} /></ErrorBoundary> : <Navigate to="/upload" />} />
             <Route path="/filters" element={datasetId ? <ErrorBoundary><FilterPage datasetId={datasetId} datasetInfo={datasetInfo} /></ErrorBoundary> : <Navigate to="/upload" />} />
             <Route path="/table" element={datasetId ? <ErrorBoundary><TablePage datasetId={datasetId} datasetInfo={datasetInfo} /></ErrorBoundary> : <Navigate to="/upload" />} />
           </Routes>

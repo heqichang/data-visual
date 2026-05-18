@@ -12,6 +12,9 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 import uuid
 import asyncio
+from datetime import datetime, timedelta
+
+from pipeline_engine import PipelineDAG, PipelineNode, PipelineExecutor
 
 app = FastAPI(title="数据可视化平台 API")
 
@@ -26,6 +29,9 @@ app.add_middleware(
 data_store: Dict[str, pd.DataFrame] = {}
 filter_store: Dict[str, Dict[str, Any]] = {}
 active_connections: Dict[str, List[WebSocket]] = {}
+pipeline_store: Dict[str, Dict[str, Any]] = {}
+dashboard_store: Dict[str, Dict[str, Any]] = {}
+pipeline_executor = PipelineExecutor()
 
 
 class DatabaseConfig(BaseModel):
@@ -51,6 +57,61 @@ class ChartRequest(BaseModel):
     y_column: Optional[str] = None
     category_column: Optional[str] = None
     filters: List[FilterConfig] = []
+    config: Optional[Dict[str, Any]] = None
+
+
+class PipelineExecuteRequest(BaseModel):
+    dataset_id: str
+    nodes: List[Dict[str, Any]]
+    edges: List[List[str]]
+    input_node_id: Optional[str] = None
+    pipeline_id: Optional[str] = None
+
+
+class PipelineSaveRequest(BaseModel):
+    pipeline_id: Optional[str] = None
+    name: str
+    description: Optional[str] = None
+    dataset_id: str
+    nodes: List[Dict[str, Any]]
+    edges: List[List[str]]
+
+
+class PivotTableRequest(BaseModel):
+    dataset_id: str
+    rows: List[str]
+    cols: List[str] = []
+    columns: List[str] = []
+    values: List[Dict[str, Any]]
+    filters: List[FilterConfig] = []
+    show_subtotals: bool = True
+    show_totals: bool = True
+    show_subtotal: bool = True
+    show_grand_total: bool = True
+
+
+class ComparisonRequest(BaseModel):
+    dataset_id: str
+    comparison_type: str
+    config: Dict[str, Any]
+    date_column: Optional[str] = None
+    value_column: Optional[str] = None
+    category_column: Optional[str] = None
+    current_period: Optional[Dict[str, Any]] = None
+    comparison_period: Optional[Dict[str, Any]] = None
+    group_a: Optional[Dict[str, Any]] = None
+    group_b: Optional[Dict[str, Any]] = None
+
+
+class DashboardSaveRequest(BaseModel):
+    dashboard_id: Optional[str] = None
+    name: str
+    description: Optional[str] = None
+    layout: List[Dict[str, Any]]
+    widgets: Dict[str, Dict[str, Any]]
+    filters: List[Dict[str, Any]] = []
+    variables: List[Dict[str, Any]] = []
+    auto_refresh: Optional[int] = None
 
 
 class ConnectionManager:
@@ -479,6 +540,248 @@ async def get_chart_data(request: ChartRequest):
                 'data': box_data
             })
         
+        elif request.chart_type == 'sankey':
+            config = request.config or {}
+            source_col = config.get('source_column')
+            target_col = config.get('target_column')
+            value_col = config.get('value_column')
+            
+            if not source_col or not target_col or not value_col:
+                raise HTTPException(status_code=400, detail="需要指定源、目标和数值列")
+            
+            grouped = filtered_df.groupby([source_col, target_col])[value_col].sum().reset_index()
+            
+            all_nodes = list(set(grouped[source_col].astype(str).tolist() + grouped[target_col].astype(str).tolist()))
+            node_index = {node: i for i, node in enumerate(all_nodes)}
+            
+            nodes = [{'name': node} for node in all_nodes]
+            links = []
+            for _, row in grouped.iterrows():
+                links.append({
+                    'source': node_index[str(row[source_col])],
+                    'target': node_index[str(row[target_col])],
+                    'value': float(row[value_col])
+                })
+            
+            return clean_for_json({'nodes': nodes, 'links': links})
+        
+        elif request.chart_type == 'funnel':
+            config = request.config or {}
+            stage_col = config.get('stage_column', request.x_column)
+            value_col = config.get('value_column', request.y_column)
+            
+            if not stage_col or not value_col:
+                raise HTTPException(status_code=400, detail="需要指定阶段和数值列")
+            
+            filtered_df[stage_col] = filtered_df[stage_col].astype(str)
+            grouped = filtered_df.groupby(stage_col)[value_col].sum().reset_index()
+            grouped = grouped.sort_values(value_col, ascending=False)
+            
+            return clean_for_json({
+                'data': [{'name': str(row[stage_col]), 'value': float(row[value_col])} for _, row in grouped.iterrows()]
+            })
+        
+        elif request.chart_type == 'radar':
+            config = request.config or {}
+            category_col = config.get('category_column', request.category_column)
+            indicator_cols = config.get('indicator_columns', [request.y_column] if request.y_column else [])
+            
+            if not indicator_cols:
+                raise HTTPException(status_code=400, detail="需要指定指标列")
+            
+            indicators = []
+            for col in indicator_cols:
+                if col in filtered_df.columns:
+                    max_val = float(filtered_df[col].max()) if pd.api.types.is_numeric_dtype(filtered_df[col]) else 100
+                    indicators.append({'name': col, 'max': max_val})
+            
+            if category_col and category_col in filtered_df.columns:
+                filtered_df[category_col] = filtered_df[category_col].astype(str)
+                grouped = filtered_df.groupby(category_col)[indicator_cols].mean().reset_index()
+                series = []
+                for _, row in grouped.iterrows():
+                    series.append({
+                        'name': str(row[category_col]),
+                        'value': [float(row[col]) for col in indicator_cols]
+                    })
+            else:
+                series = [{
+                    'name': '综合',
+                    'value': [float(filtered_df[col].mean()) for col in indicator_cols if col in filtered_df.columns]
+                }]
+            
+            return clean_for_json({'indicators': indicators, 'series': series})
+        
+        elif request.chart_type == 'heatmap':
+            config = request.config or {}
+            x_col = config.get('x_column', request.x_column)
+            y_col = config.get('y_column', request.category_column)
+            value_col = config.get('value_column', request.y_column)
+            
+            if not x_col or not y_col or not value_col:
+                raise HTTPException(status_code=400, detail="需要指定 x、y 和数值列")
+            
+            filtered_df[x_col] = filtered_df[x_col].astype(str)
+            filtered_df[y_col] = filtered_df[y_col].astype(str)
+            
+            pivot = filtered_df.pivot_table(index=y_col, columns=x_col, values=value_col, aggfunc='mean')
+            
+            x_categories = pivot.columns.astype(str).tolist()
+            y_categories = pivot.index.astype(str).tolist()
+            data = []
+            for i, y in enumerate(y_categories):
+                for j, x in enumerate(x_categories):
+                    val = pivot.iloc[i, j]
+                    if not pd.isna(val):
+                        data.append([j, i, float(val)])
+            
+            return clean_for_json({
+                'x_categories': x_categories,
+                'y_categories': y_categories,
+                'data': data
+            })
+        
+        elif request.chart_type == 'calendar_heatmap':
+            config = request.config or {}
+            date_col = config.get('date_column', request.x_column)
+            value_col = config.get('value_column', request.y_column)
+            
+            if not date_col or not value_col:
+                raise HTTPException(status_code=400, detail="需要指定日期和数值列")
+            
+            filtered_df[date_col] = pd.to_datetime(filtered_df[date_col], errors='coerce')
+            filtered_df = filtered_df.dropna(subset=[date_col])
+            
+            grouped = filtered_df.groupby(filtered_df[date_col].dt.date)[value_col].sum().reset_index()
+            grouped.columns = ['date', 'value']
+            
+            data = []
+            for _, row in grouped.iterrows():
+                data.append([row['date'].isoformat(), float(row['value'])])
+            
+            return clean_for_json({'data': data})
+        
+        elif request.chart_type == 'treemap':
+            config = request.config or {}
+            hierarchy_cols = config.get('hierarchy_columns', [request.category_column] if request.category_column else [])
+            value_col = config.get('value_column', request.y_column)
+            
+            if not hierarchy_cols or not value_col:
+                raise HTTPException(status_code=400, detail="需要指定层级和数值列")
+            
+            def build_tree(data, level=0):
+                if level >= len(hierarchy_cols):
+                    return []
+                
+                col = hierarchy_cols[level]
+                if col not in data.columns:
+                    return []
+                
+                grouped = data.groupby(col)[value_col].sum().reset_index()
+                result = []
+                for _, row in grouped.iterrows():
+                    name = str(row[col])
+                    value = float(row[value_col])
+                    
+                    if level < len(hierarchy_cols) - 1:
+                        children = build_tree(data[data[col].astype(str) == name], level + 1)
+                        result.append({'name': name, 'value': value, 'children': children})
+                    else:
+                        result.append({'name': name, 'value': value})
+                
+                return result
+            
+            tree_data = build_tree(filtered_df)
+            return clean_for_json({'data': tree_data})
+        
+        elif request.chart_type == 'sunburst':
+            config = request.config or {}
+            hierarchy_cols = config.get('hierarchy_columns', [request.category_column] if request.category_column else [])
+            value_col = config.get('value_column', request.y_column)
+            
+            if not hierarchy_cols or not value_col:
+                raise HTTPException(status_code=400, detail="需要指定层级和数值列")
+            
+            def build_tree(data, level=0):
+                if level >= len(hierarchy_cols):
+                    return []
+                
+                col = hierarchy_cols[level]
+                if col not in data.columns:
+                    return []
+                
+                grouped = data.groupby(col)[value_col].sum().reset_index()
+                result = []
+                for _, row in grouped.iterrows():
+                    name = str(row[col])
+                    value = float(row[value_col])
+                    
+                    if level < len(hierarchy_cols) - 1:
+                        children = build_tree(data[data[col].astype(str) == name], level + 1)
+                        result.append({'name': name, 'value': value, 'children': children})
+                    else:
+                        result.append({'name': name, 'value': value})
+                
+                return result
+            
+            tree_data = build_tree(filtered_df)
+            return clean_for_json({'data': tree_data})
+        
+        elif request.chart_type == 'combo':
+            config = request.config or {}
+            x_col = config.get('x_column', request.x_column)
+            bar_col = config.get('bar_column')
+            line_col = config.get('line_column')
+            
+            if not x_col or not bar_col or not line_col:
+                raise HTTPException(status_code=400, detail="需要指定 x、柱状图和折线图列")
+            
+            filtered_df[x_col] = filtered_df[x_col].astype(str)
+            grouped = filtered_df.groupby(x_col).agg({
+                bar_col: 'sum',
+                line_col: 'mean'
+            }).reset_index()
+            
+            categories = grouped[x_col].astype(str).tolist()
+            bar_data = [float(v) if not pd.isna(v) else 0 for v in grouped[bar_col].tolist()]
+            line_data = [float(v) if not pd.isna(v) else 0 for v in grouped[line_col].tolist()]
+            
+            return clean_for_json({
+                'categories': categories,
+                'bar_data': bar_data,
+                'line_data': line_data,
+                'bar_name': bar_col,
+                'line_name': line_col
+            })
+        
+        elif request.chart_type == 'waterfall':
+            config = request.config or {}
+            category_col = config.get('category_column', request.x_column)
+            value_col = config.get('value_column', request.y_column)
+            
+            if not category_col or not value_col:
+                raise HTTPException(status_code=400, detail="需要指定类别和数值列")
+            
+            filtered_df[category_col] = filtered_df[category_col].astype(str)
+            grouped = filtered_df.groupby(category_col)[value_col].sum().reset_index()
+            
+            categories = grouped[category_col].astype(str).tolist()
+            values = [float(v) for v in grouped[value_col].tolist()]
+            
+            running_total = 0
+            waterfall_data = []
+            for i, (cat, val) in enumerate(zip(categories, values)):
+                if i == 0:
+                    waterfall_data.append({'name': cat, 'value': val, 'type': 'total'})
+                elif i == len(values) - 1:
+                    running_total += val
+                    waterfall_data.append({'name': cat, 'value': running_total, 'type': 'total'})
+                else:
+                    waterfall_data.append({'name': cat, 'value': val, 'type': 'increase' if val >= 0 else 'decrease'})
+                    running_total += val
+            
+            return clean_for_json({'data': waterfall_data})
+        
         else:
             raise HTTPException(status_code=400, detail="不支持的图表类型")
     
@@ -616,6 +919,588 @@ async def get_column_metadata(dataset_id: str, column: str):
             result['has_more'] = False
     
     return clean_for_json(result)
+
+
+@app.post("/api/pipeline/execute")
+async def execute_pipeline(request: PipelineExecuteRequest):
+    if request.dataset_id not in data_store:
+        raise HTTPException(status_code=404, detail="数据集不存在")
+    
+    try:
+        dag = PipelineDAG()
+        
+        for node_data in request.nodes:
+            node = PipelineNode(
+                node_id=node_data['id'],
+                node_type=node_data['type'],
+                config=node_data.get('config', {}),
+                enabled=node_data.get('enabled', True)
+            )
+            dag.add_node(node)
+        
+        for edge in request.edges:
+            dag.add_edge(edge[0], edge[1])
+        
+        input_data = {}
+        if request.input_node_id:
+            input_data[request.input_node_id] = data_store[request.dataset_id]
+        else:
+            source_nodes = [nid for nid, node in dag.nodes.items() if not node.inputs]
+            if source_nodes:
+                input_data[source_nodes[0]] = data_store[request.dataset_id]
+        
+        result = pipeline_executor.execute_with_preview(dag, input_data)
+        
+        return clean_for_json({
+            'previews': result['previews'],
+            'execution_order': result['execution_order'],
+            'status': 'success'
+        })
+    
+    except Exception as e:
+        import traceback
+        raise HTTPException(status_code=500, detail=str(e) + "\n" + traceback.format_exc())
+
+
+@app.post("/api/pipeline/save")
+async def save_pipeline(request: PipelineSaveRequest):
+    pipeline_id = request.pipeline_id or str(uuid.uuid4())
+    
+    pipeline_store[pipeline_id] = {
+        'pipeline_id': pipeline_id,
+        'name': request.name,
+        'description': request.description,
+        'dataset_id': request.dataset_id,
+        'nodes': request.nodes,
+        'edges': request.edges,
+        'created_at': datetime.now().isoformat(),
+        'updated_at': datetime.now().isoformat()
+    }
+    
+    return {'status': 'success', 'pipeline_id': pipeline_id}
+
+
+@app.get("/api/pipeline/list")
+async def list_pipelines(dataset_id: Optional[str] = None):
+    pipelines = list(pipeline_store.values())
+    if dataset_id:
+        pipelines = [p for p in pipelines if p['dataset_id'] == dataset_id]
+    return {'pipelines': pipelines}
+
+
+@app.get("/api/pipeline/{pipeline_id}")
+async def get_pipeline(pipeline_id: str):
+    if pipeline_id not in pipeline_store:
+        raise HTTPException(status_code=404, detail="管道不存在")
+    return pipeline_store[pipeline_id]
+
+
+@app.delete("/api/pipeline/{pipeline_id}")
+async def delete_pipeline(pipeline_id: str):
+    if pipeline_id not in pipeline_store:
+        raise HTTPException(status_code=404, detail="管道不存在")
+    del pipeline_store[pipeline_id]
+    return {'status': 'success'}
+
+
+@app.post("/api/pivot")
+async def create_pivot_table(request: PivotTableRequest):
+    if request.dataset_id not in data_store:
+        raise HTTPException(status_code=404, detail="数据集不存在")
+    
+    df = data_store[request.dataset_id]
+    filtered_df = apply_filters(df, request.filters)
+    
+    try:
+        valid_rows = [col for col in request.rows if col in filtered_df.columns]
+        valid_cols = [col for col in (request.cols or request.columns) if col in filtered_df.columns]
+        
+        agg_dict = {}
+        for val_config in request.values:
+            col = val_config.get('column')
+            agg_func = val_config.get('aggregation', val_config.get('agg_func', 'sum'))
+            if col in filtered_df.columns:
+                agg_dict[col] = agg_func
+        
+        if not valid_rows or not agg_dict:
+            raise HTTPException(status_code=400, detail="需要指定行和值")
+        
+        pivot = pd.pivot_table(
+            filtered_df,
+            index=valid_rows,
+            columns=valid_cols if valid_cols else None,
+            values=list(agg_dict.keys()),
+            aggfunc=agg_dict,
+            fill_value=0
+        )
+        
+        show_subtotal = request.show_subtotal or request.show_subtotals
+        show_grand_total = request.show_grand_total or request.show_totals
+        
+        pivot = pivot.reset_index()
+        
+        if isinstance(pivot.columns, pd.MultiIndex):
+            pivot.columns = ['_'.join([str(c) for c in col if c]).strip() for col in pivot.columns]
+        
+        row_headers = valid_rows
+        data_columns = [col for col in pivot.columns if col not in valid_rows]
+        table_data = []
+        for _, row in pivot.iterrows():
+            row_data = [row[header] for header in row_headers]
+            for col in data_columns:
+                row_data.append(clean_value(row[col]))
+            table_data.append(row_data)
+        
+        return clean_for_json({
+            'row_headers': row_headers,
+            'columns': data_columns,
+            'data': table_data,
+            'row_fields': valid_rows,
+            'column_fields': valid_cols,
+            'value_fields': request.values
+        })
+    
+    except Exception as e:
+        import traceback
+        raise HTTPException(status_code=500, detail=str(e) + "\n" + traceback.format_exc())
+
+
+@app.post("/api/pivot/detail")
+async def pivot_table_detail(request: Dict[str, Any]):
+    dataset_id = request.get('dataset_id')
+    if dataset_id not in data_store:
+        raise HTTPException(status_code=404, detail="数据集不存在")
+    
+    df = data_store[dataset_id]
+    
+    try:
+        rows = request.get('rows', [])
+        cols = request.get('cols', [])
+        row_index = request.get('row_index', 0)
+        col_index = request.get('col_index', 0)
+        
+        filtered_df = df.copy()
+        
+        data = df_to_records(filtered_df.head(100))
+        
+        return clean_for_json({
+            'data': data,
+            'total': len(filtered_df),
+            'columns': list(filtered_df.columns)
+        })
+    
+    except Exception as e:
+        import traceback
+        raise HTTPException(status_code=500, detail=str(e) + "\n" + traceback.format_exc())
+
+
+@app.post("/api/pivot/export")
+async def export_pivot(request: Dict[str, Any]):
+    dataset_id = request.get('dataset_id')
+    if dataset_id not in data_store:
+        raise HTTPException(status_code=404, detail="数据集不存在")
+    
+    df = data_store[dataset_id]
+    format_type = request.get('format', 'csv')
+    
+    try:
+        rows = request.get('rows', [])
+        cols = request.get('cols', [])
+        values = request.get('values', [])
+        
+        valid_rows = [col for col in rows if col in df.columns]
+        valid_cols = [col for col in cols if col in df.columns]
+        
+        agg_dict = {}
+        for val_config in values:
+            col = val_config.get('column')
+            agg_func = val_config.get('aggregation', 'sum')
+            if col in df.columns:
+                agg_dict[col] = agg_func
+        
+        if valid_rows and agg_dict:
+            pivot = pd.pivot_table(
+                df,
+                index=valid_rows,
+                columns=valid_cols if valid_cols else None,
+                values=list(agg_dict.keys()),
+                aggfunc=agg_dict,
+                fill_value=0
+            )
+            pivot = pivot.reset_index()
+        else:
+            pivot = df
+        
+        if format_type == 'csv':
+            csv_content = pivot.to_csv(index=False)
+            return JSONResponse(content={'data': csv_content, 'filename': 'pivot_table.csv'})
+        else:
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                pivot.to_excel(writer, index=False, sheet_name='PivotTable')
+            excel_content = output.getvalue()
+            import base64
+            return JSONResponse(content={
+                'data': base64.b64encode(excel_content).decode('utf-8'),
+                'filename': 'pivot_table.xlsx'
+            })
+    
+    except Exception as e:
+        import traceback
+        raise HTTPException(status_code=500, detail=str(e) + "\n" + traceback.format_exc())
+
+
+@app.post("/api/pivot-table")
+async def create_pivot_table_legacy(request: PivotTableRequest):
+    return await create_pivot_table(request)
+
+
+@app.post("/api/pivot-table/drilldown")
+async def pivot_table_drilldown(
+    dataset_id: str,
+    row_values: Dict[str, Any],
+    column_values: Optional[Dict[str, Any]] = None,
+    filters: List[FilterConfig] = []
+):
+    if dataset_id not in data_store:
+        raise HTTPException(status_code=404, detail="数据集不存在")
+    
+    df = data_store[dataset_id]
+    filtered_df = apply_filters(df, filters)
+    
+    try:
+        for col, val in row_values.items():
+            if col in filtered_df.columns:
+                filtered_df = filtered_df[filtered_df[col].astype(str) == str(val)]
+        
+        if column_values:
+            for col, val in column_values.items():
+                if col in filtered_df.columns:
+                    filtered_df = filtered_df[filtered_df[col].astype(str) == str(val)]
+        
+        data = df_to_records(filtered_df.head(1000))
+        
+        return clean_for_json({
+            'data': data,
+            'total': len(filtered_df),
+            'columns': list(filtered_df.columns)
+        })
+    
+    except Exception as e:
+        import traceback
+        raise HTTPException(status_code=500, detail=str(e) + "\n" + traceback.format_exc())
+
+
+@app.post("/api/comparison")
+async def compare_data(request: ComparisonRequest):
+    if request.dataset_id not in data_store:
+        raise HTTPException(status_code=404, detail="数据集不存在")
+    
+    df = data_store[request.dataset_id]
+    config = request.config or {}
+    
+    try:
+        if request.comparison_type == 'time_period':
+            date_col = config.get('date_column')
+            value_col = config.get('value_column')
+            period_type = config.get('period_type', 'month_over_month')
+            
+            if not date_col or not value_col:
+                raise HTTPException(status_code=400, detail="需要指定日期和数值列")
+            
+            df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+            df = df.dropna(subset=[date_col])
+            
+            if period_type == 'year_over_year':
+                df['year'] = df[date_col].dt.year
+                df['month'] = df[date_col].dt.month
+                grouped = df.groupby(['year', 'month'])[value_col].sum().reset_index()
+                
+                time_period_data = []
+                for i in range(1, len(grouped)):
+                    current = grouped.iloc[i]
+                    prev = grouped.iloc[i - 1]
+                    if current['year'] == prev['year'] + 1 and current['month'] == prev['month']:
+                        period = f"{current['year']}-{current['month']:02d}"
+                        current_val = float(current[value_col])
+                        previous_val = float(prev[value_col])
+                        diff = current_val - previous_val
+                        growth_rate = (diff / previous_val) if previous_val != 0 else 0
+                        time_period_data.append({
+                            'period': period,
+                            'current': current_val,
+                            'previous': previous_val,
+                            'difference': diff,
+                            'growth_rate': growth_rate
+                        })
+            elif period_type == 'week_over_week':
+                df['year'] = df[date_col].dt.isocalendar().year
+                df['week'] = df[date_col].dt.isocalendar().week
+                grouped = df.groupby(['year', 'week'])[value_col].sum().reset_index()
+                
+                time_period_data = []
+                for i in range(1, len(grouped)):
+                    current = grouped.iloc[i]
+                    prev = grouped.iloc[i - 1]
+                    period = f"{current['year']} W{current['week']:02d}"
+                    current_val = float(current[value_col])
+                    previous_val = float(prev[value_col])
+                    diff = current_val - previous_val
+                    growth_rate = (diff / previous_val) if previous_val != 0 else 0
+                    time_period_data.append({
+                        'period': period,
+                        'current': current_val,
+                        'previous': previous_val,
+                        'difference': diff,
+                        'growth_rate': growth_rate
+                    })
+            else:
+                df['year'] = df[date_col].dt.year
+                df['month'] = df[date_col].dt.month
+                grouped = df.groupby(['year', 'month'])[value_col].sum().reset_index()
+                
+                time_period_data = []
+                for i in range(1, len(grouped)):
+                    current = grouped.iloc[i]
+                    prev = grouped.iloc[i - 1]
+                    period = f"{current['year']}-{current['month']:02d}"
+                    current_val = float(current[value_col])
+                    previous_val = float(prev[value_col])
+                    diff = current_val - previous_val
+                    growth_rate = (diff / previous_val) if previous_val != 0 else 0
+                    time_period_data.append({
+                        'period': period,
+                        'current': current_val,
+                        'previous': previous_val,
+                        'difference': diff,
+                        'growth_rate': growth_rate
+                    })
+            
+            if time_period_data:
+                summary = {
+                    'total_difference': sum(d['difference'] for d in time_period_data),
+                    'avg_difference': sum(d['difference'] for d in time_period_data) / len(time_period_data),
+                    'max_difference': max(d['difference'] for d in time_period_data),
+                    'min_difference': min(d['difference'] for d in time_period_data)
+                }
+            else:
+                summary = None
+            
+            return clean_for_json({
+                'time_period_data': time_period_data,
+                'summary': summary
+            })
+        
+        elif request.comparison_type == 'group':
+            group_col = config.get('group_column')
+            group_a_value = config.get('group_a_value')
+            group_b_value = config.get('group_b_value')
+            value_columns = config.get('value_columns', [])
+            
+            if not group_col or not group_a_value or not group_b_value or not value_columns:
+                raise HTTPException(status_code=400, detail="需要指定分组列、A/B组值和数值列")
+            
+            group_a_df = df[df[group_col].astype(str) == str(group_a_value)]
+            group_b_df = df[df[group_col].astype(str) == str(group_b_value)]
+            
+            group_data = []
+            for val_col in value_columns:
+                if val_col in df.columns and pd.api.types.is_numeric_dtype(df[val_col]):
+                    a_val = float(group_a_df[val_col].mean()) if len(group_a_df) > 0 else 0
+                    b_val = float(group_b_df[val_col].mean()) if len(group_b_df) > 0 else 0
+                    diff = a_val - b_val
+                    diff_pct = (diff / b_val) if b_val != 0 else 0
+                    group_data.append({
+                        'metric': val_col,
+                        'group_a': a_val,
+                        'group_b': b_val,
+                        'difference': diff,
+                        'difference_percent': diff_pct
+                    })
+            
+            if group_data:
+                summary = {
+                    'total_difference': sum(d['difference'] for d in group_data),
+                    'avg_difference': sum(d['difference'] for d in group_data) / len(group_data),
+                    'max_difference': max(d['difference'] for d in group_data),
+                    'min_difference': min(d['difference'] for d in group_data)
+                }
+            else:
+                summary = None
+            
+            return clean_for_json({
+                'group_data': group_data,
+                'summary': summary
+            })
+        
+        elif request.comparison_type == 'time':
+            if not request.date_column or not request.value_column:
+                request.date_column = config.get('date_column')
+                request.value_column = config.get('value_column')
+            
+            df[request.date_column] = pd.to_datetime(df[request.date_column], errors='coerce')
+            df = df.dropna(subset=[request.date_column])
+            
+            current_start = pd.to_datetime(request.current_period['start'])
+            current_end = pd.to_datetime(request.current_period['end'])
+            compare_start = pd.to_datetime(request.comparison_period['start'])
+            compare_end = pd.to_datetime(request.comparison_period['end'])
+            
+            current_df = df[(df[request.date_column] >= current_start) & (df[request.date_column] <= current_end)]
+            compare_df = df[(df[request.date_column] >= compare_start) & (df[request.date_column] <= compare_end)]
+            
+            if request.category_column and request.category_column in df.columns:
+                current_grouped = current_df.groupby(request.category_column)[request.value_column].sum().reset_index()
+                compare_grouped = compare_df.groupby(request.category_column)[request.value_column].sum().reset_index()
+                
+                merged = current_grouped.merge(compare_grouped, on=request.category_column, how='outer', suffixes=('_current', '_compare'))
+                merged = merged.fillna(0)
+                merged['diff'] = merged[f'{request.value_column}_current'] - merged[f'{request.value_column}_compare']
+                merged['diff_pct'] = (merged['diff'] / merged[f'{request.value_column}_compare'] * 100).round(2)
+                
+                return clean_for_json({
+                    'comparison_type': 'time',
+                    'categories': merged[request.category_column].astype(str).tolist(),
+                    'current_values': [float(v) for v in merged[f'{request.value_column}_current'].tolist()],
+                    'compare_values': [float(v) for v in merged[f'{request.value_column}_compare'].tolist()],
+                    'differences': [float(v) for v in merged['diff'].tolist()],
+                    'difference_percentages': [float(v) if not pd.isna(v) and not np.isinf(v) else None for v in merged['diff_pct'].tolist()]
+                })
+            else:
+                current_sum = float(current_df[request.value_column].sum())
+                compare_sum = float(compare_df[request.value_column].sum())
+                diff = current_sum - compare_sum
+                diff_pct = (diff / compare_sum * 100) if compare_sum != 0 else None
+                
+                return clean_for_json({
+                    'comparison_type': 'time',
+                    'current_value': current_sum,
+                    'compare_value': compare_sum,
+                    'difference': diff,
+                    'difference_percentage': diff_pct
+                })
+        
+        elif request.comparison_type == 'ab':
+            if not request.group_a or not request.group_b:
+                request.group_a = {config.get('group_column'): config.get('group_a_value')}
+                request.group_b = {config.get('group_column'): config.get('group_b_value')}
+                request.value_column = config.get('value_columns', [None])[0]
+            
+            group_a_df = df.copy()
+            for col, val in request.group_a.items():
+                if col in group_a_df.columns:
+                    group_a_df = group_a_df[group_a_df[col].astype(str) == str(val)]
+            
+            group_b_df = df.copy()
+            for col, val in request.group_b.items():
+                if col in group_b_df.columns:
+                    group_b_df = group_b_df[group_b_df[col].astype(str) == str(val)]
+            
+            if request.category_column and request.category_column in df.columns:
+                a_grouped = group_a_df.groupby(request.category_column)[request.value_column].sum().reset_index()
+                b_grouped = group_b_df.groupby(request.category_column)[request.value_column].sum().reset_index()
+                
+                merged = a_grouped.merge(b_grouped, on=request.category_column, how='outer', suffixes=('_a', '_b'))
+                merged = merged.fillna(0)
+                merged['diff'] = merged[f'{request.value_column}_a'] - merged[f'{request.value_column}_b']
+                merged['diff_pct'] = (merged['diff'] / merged[f'{request.value_column}_b'] * 100).round(2)
+                
+                return clean_for_json({
+                    'comparison_type': 'ab',
+                    'categories': merged[request.category_column].astype(str).tolist(),
+                    'group_a_values': [float(v) for v in merged[f'{request.value_column}_a'].tolist()],
+                    'group_b_values': [float(v) for v in merged[f'{request.value_column}_b'].tolist()],
+                    'differences': [float(v) for v in merged['diff'].tolist()],
+                    'difference_percentages': [float(v) if not pd.isna(v) and not np.isinf(v) else None for v in merged['diff_pct'].tolist()]
+                })
+            else:
+                a_sum = float(group_a_df[request.value_column].sum()) if request.value_column else 0
+                b_sum = float(group_b_df[request.value_column].sum()) if request.value_column else 0
+                diff = a_sum - b_sum
+                diff_pct = (diff / b_sum * 100) if b_sum != 0 else None
+                
+                return clean_for_json({
+                    'comparison_type': 'ab',
+                    'group_a_value': a_sum,
+                    'group_b_value': b_sum,
+                    'difference': diff,
+                    'difference_percentage': diff_pct
+                })
+        
+        else:
+            raise HTTPException(status_code=400, detail="不支持的对比类型")
+    
+    except Exception as e:
+        import traceback
+        raise HTTPException(status_code=500, detail=str(e) + "\n" + traceback.format_exc())
+
+
+@app.post("/api/dashboard/save")
+async def save_dashboard(request: DashboardSaveRequest):
+    dashboard_id = request.dashboard_id or str(uuid.uuid4())
+    
+    dashboard_store[dashboard_id] = {
+        'dashboard_id': dashboard_id,
+        'name': request.name,
+        'description': request.description,
+        'layout': request.layout,
+        'widgets': request.widgets,
+        'filters': request.filters,
+        'variables': request.variables,
+        'auto_refresh': request.auto_refresh,
+        'created_at': datetime.now().isoformat(),
+        'updated_at': datetime.now().isoformat()
+    }
+    
+    return {'status': 'success', 'dashboard_id': dashboard_id}
+
+
+@app.get("/api/dashboard/list")
+async def list_dashboards():
+    return {'dashboards': list(dashboard_store.values())}
+
+
+@app.get("/api/dashboard/{dashboard_id}")
+async def get_dashboard(dashboard_id: str):
+    if dashboard_id not in dashboard_store:
+        raise HTTPException(status_code=404, detail="仪表盘不存在")
+    return dashboard_store[dashboard_id]
+
+
+@app.delete("/api/dashboard/{dashboard_id}")
+async def delete_dashboard(dashboard_id: str):
+    if dashboard_id not in dashboard_store:
+        raise HTTPException(status_code=404, detail="仪表盘不存在")
+    del dashboard_store[dashboard_id]
+    return {'status': 'success'}
+
+
+@app.post("/api/dashboard/{dashboard_id}/widget-data")
+async def get_dashboard_widget_data(dashboard_id: str, widget_id: str, dataset_id: str, config: Dict[str, Any]):
+    if dashboard_id not in dashboard_store:
+        raise HTTPException(status_code=404, detail="仪表盘不存在")
+    if dataset_id not in data_store:
+        raise HTTPException(status_code=404, detail="数据集不存在")
+    
+    widget_type = config.get('type', 'chart')
+    chart_type = config.get('chart_type', 'bar')
+    
+    try:
+        chart_request = ChartRequest(
+            dataset_id=dataset_id,
+            chart_type=chart_type,
+            x_column=config.get('x_column'),
+            y_column=config.get('y_column'),
+            category_column=config.get('category_column'),
+            filters=[FilterConfig(**f) for f in config.get('filters', [])],
+            config=config
+        )
+        
+        result = await get_chart_data(chart_request)
+        return result
+    
+    except Exception as e:
+        return {'error': str(e), 'data': []}
 
 
 @app.get("/api/health")
