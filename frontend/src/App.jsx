@@ -11,7 +11,13 @@ import {
   BlockOutlined,
   PieChartOutlined,
   SwapOutlined,
-  AppstoreOutlined
+  AppstoreOutlined,
+  ThunderboltOutlined,
+  DatabaseOutlined,
+  BellOutlined,
+  LineChartOutlined,
+  ForkOutlined,
+  TeamOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import UploadPage from './pages/UploadPage.jsx'
@@ -23,6 +29,11 @@ import PipelinePage from './pages/PipelinePage.jsx'
 import DashboardPage from './pages/DashboardPage.jsx'
 import PivotTablePage from './pages/PivotTablePage.jsx'
 import ComparisonPage from './pages/ComparisonPage.jsx'
+import StreamingPage from './pages/StreamingPage.jsx'
+import SQLEditorPage from './pages/SQLEditorPage.jsx'
+import AlertingPage from './pages/AlertingPage.jsx'
+import AnalyticsPage from './pages/AnalyticsPage.jsx'
+import LineagePage from './pages/LineagePage.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 
 const { Header, Sider, Content } = Layout
@@ -96,6 +107,48 @@ function App() {
       label: '数据表格',
       disabled: !datasetId,
     },
+    {
+      key: 'group-realtime',
+      icon: <ThunderboltOutlined />,
+      label: '实时分析',
+      type: 'group',
+      children: [
+        {
+          key: '/streaming',
+          icon: <ThunderboltOutlined />,
+          label: '实时数据流',
+        },
+        {
+          key: '/sql',
+          icon: <DatabaseOutlined />,
+          label: 'SQL 编辑器',
+        },
+      ]
+    },
+    {
+      key: 'group-advanced',
+      icon: <LineChartOutlined />,
+      label: '高级功能',
+      type: 'group',
+      children: [
+        {
+          key: '/analytics',
+          icon: <LineChartOutlined />,
+          label: '高级分析',
+          disabled: !datasetId,
+        },
+        {
+          key: '/alerting',
+          icon: <BellOutlined />,
+          label: '告警系统',
+        },
+        {
+          key: '/lineage',
+          icon: <ForkOutlined />,
+          label: '数据血缘',
+        },
+      ]
+    },
   ]
 
   const handleDatasetLoaded = (data) => {
@@ -148,6 +201,11 @@ function App() {
             <Route path="/comparison" element={datasetId ? <ErrorBoundary><ComparisonPage datasetId={datasetId} datasetInfo={datasetInfo} /></ErrorBoundary> : <Navigate to="/upload" />} />
             <Route path="/filters" element={datasetId ? <ErrorBoundary><FilterPage datasetId={datasetId} datasetInfo={datasetInfo} /></ErrorBoundary> : <Navigate to="/upload" />} />
             <Route path="/table" element={datasetId ? <ErrorBoundary><TablePage datasetId={datasetId} datasetInfo={datasetInfo} /></ErrorBoundary> : <Navigate to="/upload" />} />
+            <Route path="/streaming" element={<ErrorBoundary><StreamingPage datasetId={datasetId} /></ErrorBoundary>} />
+            <Route path="/sql" element={<ErrorBoundary><SQLEditorPage datasetId={datasetId} datasetInfo={datasetInfo} /></ErrorBoundary>} />
+            <Route path="/analytics" element={datasetId ? <ErrorBoundary><AnalyticsPage datasetId={datasetId} /></ErrorBoundary> : <Navigate to="/upload" />} />
+            <Route path="/alerting" element={<ErrorBoundary><AlertingPage datasetId={datasetId} /></ErrorBoundary>} />
+            <Route path="/lineage" element={<ErrorBoundary><LineagePage /></ErrorBoundary>} />
           </Routes>
         </Content>
       </Layout>

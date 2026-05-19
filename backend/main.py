@@ -1527,6 +1527,33 @@ async def health_check():
     return {"status": "ok"}
 
 
+from modules.streaming import streaming_router
+from modules.sql_editor import sql_router
+from modules.collaboration import collaboration_router
+from modules.alerting import alert_router
+from modules.analytics import analytics_router
+from modules.lineage import lineage_router
+
+app.include_router(streaming_router)
+app.include_router(sql_router)
+app.include_router(collaboration_router)
+app.include_router(alert_router)
+app.include_router(analytics_router)
+app.include_router(lineage_router)
+
+
+@app.on_event("startup")
+async def startup_event():
+    from modules.alerting import alert_engine
+    await alert_engine.start_periodic_check(interval=60)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    from modules.alerting import alert_engine
+    alert_engine.stop_periodic_check()
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
