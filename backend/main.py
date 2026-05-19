@@ -1025,11 +1025,19 @@ async def create_pivot_table(request: PivotTableRequest):
         if not valid_rows or not agg_dict:
             raise HTTPException(status_code=400, detail="需要指定行和值")
         
+        value_cols = list(agg_dict.keys())
+        conflicting_cols = [col for col in valid_cols if col in value_cols]
+        if conflicting_cols:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"列字段不能与值字段重复。冲突的字段: {', '.join(conflicting_cols)}。列字段用于分组，值字段用于聚合计算，请选择不同的列。"
+            )
+        
         pivot = pd.pivot_table(
             filtered_df,
             index=valid_rows,
             columns=valid_cols if valid_cols else None,
-            values=list(agg_dict.keys()),
+            values=value_cols,
             aggfunc=agg_dict,
             fill_value=0
         )
