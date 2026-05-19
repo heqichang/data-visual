@@ -442,7 +442,7 @@ async def get_chart_data(request: ChartRequest):
         raise HTTPException(status_code=404, detail="数据集不存在")
     
     df = data_store[request.dataset_id]
-    filtered_df = apply_filters(df, request.filters)
+    filtered_df = apply_filters(df, request.filters).copy()
     
     if len(filtered_df) == 0:
         return {'data': [], 'categories': []}
@@ -785,6 +785,8 @@ async def get_chart_data(request: ChartRequest):
         else:
             raise HTTPException(status_code=400, detail="不支持的图表类型")
     
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         raise HTTPException(status_code=500, detail=str(e) + "\n" + traceback.format_exc())
@@ -1009,7 +1011,7 @@ async def create_pivot_table(request: PivotTableRequest):
         raise HTTPException(status_code=404, detail="数据集不存在")
     
     df = data_store[request.dataset_id]
-    filtered_df = apply_filters(df, request.filters)
+    filtered_df = apply_filters(df, request.filters).copy()
     
     try:
         valid_rows = [col for col in request.rows if col in filtered_df.columns]
@@ -1068,6 +1070,8 @@ async def create_pivot_table(request: PivotTableRequest):
             'value_fields': request.values
         })
     
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         raise HTTPException(status_code=500, detail=str(e) + "\n" + traceback.format_exc())
@@ -1153,6 +1157,8 @@ async def export_pivot(request: Dict[str, Any]):
                 'filename': 'pivot_table.xlsx'
             })
     
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         raise HTTPException(status_code=500, detail=str(e) + "\n" + traceback.format_exc())
@@ -1204,7 +1210,7 @@ async def compare_data(request: ComparisonRequest):
     if request.dataset_id not in data_store:
         raise HTTPException(status_code=404, detail="数据集不存在")
     
-    df = data_store[request.dataset_id]
+    df = data_store[request.dataset_id].copy()
     config = request.config or {}
     
     try:
@@ -1224,14 +1230,16 @@ async def compare_data(request: ComparisonRequest):
                 df['month'] = df[date_col].dt.month
                 grouped = df.groupby(['year', 'month'])[value_col].sum().reset_index()
                 
+                current_year = grouped[grouped['year'] == grouped['year'].max()]
+                previous_year = grouped[grouped['year'] == grouped['year'].max() - 1]
+                
                 time_period_data = []
-                for i in range(1, len(grouped)):
-                    current = grouped.iloc[i]
-                    prev = grouped.iloc[i - 1]
-                    if current['year'] == prev['year'] + 1 and current['month'] == prev['month']:
-                        period = f"{current['year']}-{current['month']:02d}"
-                        current_val = float(current[value_col])
-                        previous_val = float(prev[value_col])
+                if len(current_year) > 0 and len(previous_year) > 0:
+                    merged = current_year.merge(previous_year, on='month', suffixes=('_current', '_previous'))
+                    for _, row in merged.iterrows():
+                        period = f"{int(row['year_current'])}-{int(row['month']):02d}"
+                        current_val = float(row[f'{value_col}_current'])
+                        previous_val = float(row[f'{value_col}_previous'])
                         diff = current_val - previous_val
                         growth_rate = (diff / previous_val) if previous_val != 0 else 0
                         time_period_data.append({
@@ -1242,15 +1250,16 @@ async def compare_data(request: ComparisonRequest):
                             'growth_rate': growth_rate
                         })
             elif period_type == 'week_over_week':
-                df['year'] = df[date_col].dt.isocalendar().year
-                df['week'] = df[date_col].dt.isocalendar().week
+                iso_cal = df[date_col].dt.isocalendar()
+                df['year'] = iso_cal['year'].astype(int)
+                df['week'] = iso_cal['week'].astype(int)
                 grouped = df.groupby(['year', 'week'])[value_col].sum().reset_index()
                 
                 time_period_data = []
                 for i in range(1, len(grouped)):
                     current = grouped.iloc[i]
                     prev = grouped.iloc[i - 1]
-                    period = f"{current['year']} W{current['week']:02d}"
+                    period = f"{int(current['year'])} W{int(current['week']):02d}"
                     current_val = float(current[value_col])
                     previous_val = float(prev[value_col])
                     diff = current_val - previous_val
@@ -1271,7 +1280,7 @@ async def compare_data(request: ComparisonRequest):
                 for i in range(1, len(grouped)):
                     current = grouped.iloc[i]
                     prev = grouped.iloc[i - 1]
-                    period = f"{current['year']}-{current['month']:02d}"
+                    period = f"{int(current['year'])}-{int(current['month']):02d}"
                     current_val = float(current[value_col])
                     previous_val = float(prev[value_col])
                     diff = current_val - previous_val
@@ -1438,6 +1447,8 @@ async def compare_data(request: ComparisonRequest):
         else:
             raise HTTPException(status_code=400, detail="不支持的对比类型")
     
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         raise HTTPException(status_code=500, detail=str(e) + "\n" + traceback.format_exc())

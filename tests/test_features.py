@@ -777,7 +777,7 @@ class TestAdvancedCharts:
             'y_column': '销量',
         })
 
-        assert response.status_code in (400, 500)
+        assert response.status_code == 400
 
 
 # ==============================================================================
@@ -900,7 +900,7 @@ class TestPivotTable:
             'values': [{'column': '销售额', 'aggregation': 'sum'}],
         })
 
-        assert response.status_code in (400, 500)
+        assert response.status_code == 400
 
 
 # ==============================================================================
@@ -922,6 +922,7 @@ class TestComparisonCalculations:
         assert response.status_code == 200
         data = response.json()
         assert 'time_period_data' in data
+        assert len(data['time_period_data']) > 0
 
         for entry in data['time_period_data']:
             assert 'period' in entry
@@ -933,22 +934,6 @@ class TestComparisonCalculations:
             if entry['previous'] != 0:
                 expected_rate = entry['difference'] / entry['previous']
                 assert abs(entry['growth_rate'] - expected_rate) < 0.01
-
-    def test_year_over_year_empty_due_to_bug(self, client, register_yoy_dataset):
-        response = client.post('/api/comparison', json={
-            'dataset_id': register_yoy_dataset,
-            'comparison_type': 'time_period',
-            'config': {
-                'date_column': '日期',
-                'value_column': '销售额',
-                'period_type': 'year_over_year',
-            },
-        })
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data['time_period_data'] == []
-        assert data['summary'] is None
 
     def test_month_over_month_comparison(self, client):
         dataset_id = 'test-mom-dataset'
@@ -967,19 +952,17 @@ class TestComparisonCalculations:
                 },
             })
 
-            if response.status_code == 200:
-                data = response.json()
-                assert 'time_period_data' in data
-                assert len(data['time_period_data']) > 0
+            assert response.status_code == 200
+            data = response.json()
+            assert 'time_period_data' in data
+            assert len(data['time_period_data']) > 0
 
-                for entry in data['time_period_data']:
-                    assert entry['difference'] == pytest.approx(entry['current'] - entry['previous'], abs=0.01)
-                    if entry['previous'] != 0:
-                        assert entry['growth_rate'] == pytest.approx(
-                            entry['difference'] / entry['previous'], abs=0.01
-                        )
-            else:
-                pytest.skip("BUG: month_over_month format code 'd' for float type after groupby reset_index")
+            for entry in data['time_period_data']:
+                assert entry['difference'] == pytest.approx(entry['current'] - entry['previous'], abs=0.01)
+                if entry['previous'] != 0:
+                    assert entry['growth_rate'] == pytest.approx(
+                        entry['difference'] / entry['previous'], abs=0.01
+                    )
         finally:
             data_store.pop(dataset_id, None)
             filter_store.pop(dataset_id, None)
@@ -1005,11 +988,10 @@ class TestComparisonCalculations:
                 },
             })
 
-            if response.status_code == 200:
-                data = response.json()
-                assert 'time_period_data' in data
-            else:
-                pytest.skip("BUG: week_over_week format code 'd' for float type after groupby reset_index")
+            assert response.status_code == 200
+            data = response.json()
+            assert 'time_period_data' in data
+            assert len(data['time_period_data']) > 0
         finally:
             data_store.pop(dataset_id, None)
             filter_store.pop(dataset_id, None)
@@ -1031,22 +1013,22 @@ class TestComparisonCalculations:
                 },
             })
 
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('summary'):
-                    summary = data['summary']
-                    assert 'total_difference' in summary
-                    assert 'avg_difference' in summary
-                    assert 'max_difference' in summary
-                    assert 'min_difference' in summary
+            assert response.status_code == 200
+            data = response.json()
+            if data.get('summary'):
+                summary = data['summary']
+                assert 'total_difference' in summary
+                assert 'avg_difference' in summary
+                assert 'max_difference' in summary
+                assert 'min_difference' in summary
 
-                    time_data = data['time_period_data']
-                    assert summary['total_difference'] == pytest.approx(
-                        sum(d['difference'] for d in time_data), abs=0.01
-                    )
-                    assert summary['avg_difference'] == pytest.approx(
-                        sum(d['difference'] for d in time_data) / len(time_data), abs=0.01
-                    )
+                time_data = data['time_period_data']
+                assert summary['total_difference'] == pytest.approx(
+                    sum(d['difference'] for d in time_data), abs=0.01
+                )
+                assert summary['avg_difference'] == pytest.approx(
+                    sum(d['difference'] for d in time_data) / len(time_data), abs=0.01
+                )
         finally:
             data_store.pop(dataset_id, None)
             filter_store.pop(dataset_id, None)
@@ -1096,19 +1078,16 @@ class TestComparisonCalculations:
                 'config': {
                     'date_column': '日期',
                     'value_column': '销售额',
-                    'period_type': 'month_over_month',
+                    'period_type': 'year_over_year',
                 },
             })
 
-            if response.status_code == 200:
-                data = response.json()
-                assert len(data['time_period_data']) > 0
-                for entry in data['time_period_data']:
-                    assert entry['difference'] >= 0
-                    if entry['previous'] > 0:
-                        assert entry['growth_rate'] >= 0
-            else:
-                pytest.skip("BUG: month_over_month format code 'd' for float type after groupby reset_index")
+            assert response.status_code == 200
+            data = response.json()
+            assert len(data['time_period_data']) > 0
+            for entry in data['time_period_data']:
+                assert entry['difference'] > 0
+                assert entry['growth_rate'] > 0
         finally:
             data_store.pop(dataset_id, None)
             filter_store.pop(dataset_id, None)
@@ -1133,14 +1112,12 @@ class TestComparisonCalculations:
                 },
             })
 
-            if response.status_code == 200:
-                data = response.json()
-                assert len(data['time_period_data']) > 0
-                for entry in data['time_period_data']:
-                    assert entry['difference'] < 0
-                    assert entry['growth_rate'] < 0
-            else:
-                pytest.skip("BUG: month_over_month format code 'd' for float type after groupby reset_index")
+            assert response.status_code == 200
+            data = response.json()
+            assert len(data['time_period_data']) > 0
+            for entry in data['time_period_data']:
+                assert entry['difference'] < 0
+                assert entry['growth_rate'] < 0
         finally:
             data_store.pop(dataset_id, None)
             filter_store.pop(dataset_id, None)
@@ -1165,13 +1142,11 @@ class TestComparisonCalculations:
                 },
             })
 
-            if response.status_code == 200:
-                data = response.json()
-                for entry in data['time_period_data']:
-                    if entry['previous'] == 0:
-                        assert entry['growth_rate'] == 0
-            else:
-                pytest.skip("BUG: month_over_month format code 'd' for float type after groupby reset_index")
+            assert response.status_code == 200
+            data = response.json()
+            for entry in data['time_period_data']:
+                if entry['previous'] == 0:
+                    assert entry['growth_rate'] == 0
         finally:
             data_store.pop(dataset_id, None)
             filter_store.pop(dataset_id, None)
@@ -1344,25 +1319,26 @@ class TestComparisonLogicDirect:
         df['month'] = df['日期'].dt.month
         grouped = df.groupby(['year', 'month'])['销售额'].sum().reset_index()
 
+        current_year = grouped[grouped['year'] == grouped['year'].max()]
+        previous_year = grouped[grouped['year'] == grouped['year'].max() - 1]
+
         time_period_data = []
-        for i in range(1, len(grouped)):
-            current = grouped.iloc[i]
-            prev = grouped.iloc[i - 1]
-            if int(current['year']) == int(prev['year']) + 1 and int(current['month']) == int(prev['month']):
-                period = f"{int(current['year'])}-{int(current['month']):02d}"
-                current_val = float(current['销售额'])
-                previous_val = float(prev['销售额'])
+        if len(current_year) > 0 and len(previous_year) > 0:
+            merged = current_year.merge(previous_year, on='month', suffixes=('_current', '_previous'))
+            for _, row in merged.iterrows():
+                current_val = float(row['销售额_current'])
+                previous_val = float(row['销售额_previous'])
                 diff = current_val - previous_val
                 growth_rate = (diff / previous_val) if previous_val != 0 else 0
                 time_period_data.append({
-                    'period': period,
+                    'period': f"{int(row['year_current'])}-{int(row['month']):02d}",
                     'current': current_val,
                     'previous': previous_val,
                     'difference': diff,
                     'growth_rate': growth_rate
                 })
 
-        assert len(time_period_data) == 0, "YoY via consecutive rows is broken — grouped data sorted by (year,month) never has same month in consecutive rows"
+        assert len(time_period_data) == 12
 
     def test_year_over_year_correct_logic_via_merge(self):
         df = _make_yoy_df()
